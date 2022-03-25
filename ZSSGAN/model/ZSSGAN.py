@@ -2,7 +2,6 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath('../'))
 
-
 import torch
 import torchvision.transforms as transforms
 
@@ -12,7 +11,14 @@ import copy
 from functools import partial
 
 from ZSSGAN.model.sg2_model import Generator, Discriminator
-from ZSSGAN.criteria.clip_loss import CLIPLoss       
+from ZSSGAN.criteria.clip_loss import CLIPLoss
+from ZSSGAN.utils.training_utils import mixing_noise
+from ZSSGAN.utils.file_utils import save_images
+
+from IPython.display import display
+import os
+from PIL import Image
+import pytorch_lightning as pl
 
 def requires_grad(model, flag=True):
     for p in model.parameters():
@@ -144,27 +150,27 @@ class SG2Discriminator(torch.nn.Module):
     def forward(self, images):
         return self.discriminator(images)
 
-class ZSSGAN(torch.nn.Module):
+class ZSSGAN(pl.LightningModule):
     def __init__(self, args):
         super(ZSSGAN, self).__init__()
 
         self.args = args
 
-        self.device = 'cuda:0'
+#         self.device = 'cuda:0'
 
         # Set up frozen (source) generator
-        self.generator_frozen = SG2Generator(args.frozen_gen_ckpt, img_size=args.size, channel_multiplier=args.channel_multiplier).to(self.device)
+        self.generator_frozen = SG2Generator(args.frozen_gen_ckpt, img_size=args.size, channel_multiplier=args.channel_multiplier)#.to(self.device)
         self.generator_frozen.freeze_layers()
         self.generator_frozen.eval()
 
         # Set up trainable (target) generator
-        self.generator_trainable = SG2Generator(args.train_gen_ckpt, img_size=args.size, channel_multiplier=args.channel_multiplier).to(self.device)
+        self.generator_trainable = SG2Generator(args.train_gen_ckpt, img_size=args.size, channel_multiplier=args.channel_multiplier)#.to(self.device)
         self.generator_trainable.freeze_layers()
         self.generator_trainable.unfreeze_layers(self.generator_trainable.get_training_layers(args.phase))
         self.generator_trainable.train()
 
         # Losses
-        self.clip_loss_models = {model_name: CLIPLoss(self.device, 
+        self.clip_loss_models = {model_name: CLIPLoss('cuda',#self.device, 
                                                       lambda_direction=args.lambda_direction, 
                                                       lambda_patch=args.lambda_patch, 
                                                       lambda_global=args.lambda_global, 
@@ -176,19 +182,46 @@ class ZSSGAN(torch.nn.Module):
         self.clip_model_weights = {model_name: weight for model_name, weight in zip(args.clip_models, args.clip_model_weights)}
 
         self.mse_loss  = torch.nn.MSELoss()
-
-        self.source_class = args.source_class
-        self.target_class = args.target_class
+        self.g_reg_ratio = args.g_reg_ratio # for Adam optimizer
+        self.lr = args.lr
+        
+        self.source_model_type = args.source_model_type # model weights type: ffhq, cat, dog
+        self.source_class = args.source_class #eg. photo
+        self.target_class = args.target_class #eg. sketch
 
         self.auto_layer_k     = args.auto_layer_k
         self.auto_layer_iters = args.auto_layer_iters
         
         if args.target_img_list is not None:
             self.set_img2img_direction()
-
+        
+        # image seed for training
+        self.n_sample = args.n_sample
+        self.init_fixed_z(self.n_sample)
+        self.sample_truncation = args.sample_truncation
+        self.batch = args.batch
+        self.mixing = args.mixing
+        
+    def init_fixed_z(self, n_sample):
+        self.fixed_z = torch.randn(n_sample, 512, 
+#                                    device=self.device
+                                  )
+        return None
+    
+    def configure_optimizers(self):
+        g_reg_ratio = self.g_reg_ratio
+        optim = torch.optim.Adam(
+                    self.generator_trainable.parameters(),
+                    lr=self.lr * g_reg_ratio,
+                    betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
+                    )
+        return optim
+    
     def set_img2img_direction(self):
         with torch.no_grad():
-            sample_z  = torch.randn(self.args.img2img_batch, 512, device=self.device)
+            sample_z  = torch.randn(self.args.img2img_batch, 512, 
+#                                     device=self.device
+                                   )
             generated = self.generator_trainable([sample_z])[0]
 
             for _, model in self.clip_loss_models.items():
@@ -198,12 +231,14 @@ class ZSSGAN(torch.nn.Module):
 
     def determine_opt_layers(self):
 
-        sample_z = torch.randn(self.args.auto_layer_batch, 512, device=self.device)
+        sample_z = torch.randn(self.args.auto_layer_batch, 512, 
+#                                device=self.device
+                              )
 
         initial_w_codes = self.generator_frozen.style([sample_z])
         initial_w_codes = initial_w_codes[0].unsqueeze(1).repeat(1, self.generator_frozen.generator.n_latent, 1)
 
-        w_codes = torch.Tensor(initial_w_codes.cpu().detach().numpy()).to(self.device)
+        w_codes = torch.Tensor(initial_w_codes.cpu().detach().numpy())#.to(self.device)
 
         w_codes.requires_grad = True
 
@@ -278,7 +313,32 @@ class ZSSGAN(torch.nn.Module):
         clip_loss = torch.sum(torch.stack([self.clip_model_weights[model_name] * self.clip_loss_models[model_name](frozen_img, self.source_class, trainable_img, self.target_class) for model_name in self.clip_model_weights.keys()]))
 
         return [frozen_img, trainable_img], clip_loss
+    
+    def training_step(self, batch, batch_idx, optimizer_idx = 0):
+        sample_z = mixing_noise(self.batch, 512, self.mixing, device='cuda:0')
+        [sampled_src, sampled_dst], clip_loss = self(sample_z)
+        
+        return clip_loss
+    
+    def generate_samples_jupyter(self, sample_dir, use_fixed_z=False, n_sample=9, 
+                                 prefix_str="sample", postfix_num=0, frame_size=(1024, 256)):
+        self.eval()
+        with torch.no_grad():
+            if use_fixed_z:
+                samples = self.fixed_z.to('cuda')
+            else:
+                samples = torch.randn(n_sample, 512, device='cuda')
+                
+            [sampled_src, sampled_dst], loss = self([samples], truncation=self.sample_truncation)
 
+            if self.source_model_type == 'car':
+                sampled_dst = sampled_dst[:, :, 64:448, :]
+
+            grid_rows = 4
+            save_images(sampled_dst, sample_dir, prefix_str, grid_rows, postfix_num)
+            img = Image.open(os.path.join(sample_dir, f"{prefix_str}_{str(postfix_num).zfill(6)}.jpg")).resize(frame_size)
+            display(img)
+        
     def pivot(self):
         par_frozen = dict(self.generator_frozen.named_parameters())
         par_train  = dict(self.generator_trainable.named_parameters())

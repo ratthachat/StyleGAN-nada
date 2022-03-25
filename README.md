@@ -1,3 +1,9 @@
+# StyleGAN-NADA Ligthning:
+
+A simple effort to port StyleGAN-NADA to Pytorch Lightning.
+
+Below is the README from original repo.
+-----
 # StyleGAN-NADA: CLIP-Guided Domain Adaptation of Image Generators
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](http://colab.research.google.com/github/rinongal/stylegan-nada/blob/main/stylegan_nada.ipynb) 

@@ -315,7 +315,7 @@ class ZSSGAN(pl.LightningModule):
         return [frozen_img, trainable_img], clip_loss
     
     def training_step(self, batch, batch_idx, optimizer_idx = 0):
-        sample_z = mixing_noise(self.batch, 512, self.mixing, device='cuda:0')
+        sample_z, _ = batch
         [sampled_src, sampled_dst], clip_loss = self(sample_z)
         
         return clip_loss

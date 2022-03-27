@@ -1,4 +1,3 @@
-%%writefile /kaggle/working/stylegan_nada/ZSSGAN/utils/training_utils.py
 import torch
 import math
 import random

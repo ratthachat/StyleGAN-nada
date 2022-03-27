@@ -1,7 +1,13 @@
 # StyleGAN-NADA Ligthning:
 
-A simple effort to port StyleGAN-NADA to Pytorch Lightning.
+A simple effort to port StyleGAN-NADA to **Pytorch Lightning**. You can play this lightning version following this Kaggle notebook:
+[![Kaggle](https://camo.githubusercontent.com/a08ca511178e691ace596a95d334f73cf4ce06e83a5c4a5169b8bb68cac27bef/68747470733a2f2f6b6167676c652e636f6d2f7374617469632f696d616765732f6f70656e2d696e2d6b6167676c652e737667)](https://www.kaggle.com/code/ratthachat/lightning-stylegan-nada-playground/) 
 
+
+![](https://i.ibb.co/FXjr0HB/stylegan-nada-jung.jpg)
+This picture is my 2-cent explanation on StyleGAN-NADA
+
+-----
 Below is the README from original repo.
 -----
 # StyleGAN-NADA: CLIP-Guided Domain Adaptation of Image Generators
